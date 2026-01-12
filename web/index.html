@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Realistic Shadow Generator</title>
+  <link rel="stylesheet" href="src/styles.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <h1>Realistic Shadow Generator</h1>
+      <p class="subtitle">Create believable shadows with directional lighting</p>
+    </header>
+
+    <main class="main-content">
+      <!-- Left Panel - Controls -->
+      <aside class="control-panel">
+        <!-- Input Images Section -->
+        <section class="panel-section">
+          <h2>Input Images</h2>
+
+          <div class="input-group">
+            <label>Foreground (person/subject)</label>
+            <div id="foreground-drop" class="drop-zone">
+              <span class="drop-text">Drop image or click</span>
+            </div>
+            <input type="file" id="foreground-input" accept="image/*" hidden>
+            <div class="checkbox-group" style="margin-top: 8px;">
+              <input type="checkbox" id="auto-remove-bg" checked>
+              <label for="auto-remove-bg">Auto-remove background (for JPG)</label>
+            </div>
+          </div>
+
+          <div class="input-group">
+            <label>Background</label>
+            <div id="background-drop" class="drop-zone">
+              <span class="drop-text">Drop image or click</span>
+            </div>
+            <input type="file" id="background-input" accept="image/*" hidden>
+          </div>
+
+          <div class="input-group">
+            <label>Depth Map (Optional)</label>
+            <div id="depth-drop" class="drop-zone drop-zone-optional">
+              <span class="drop-text">Optional: Drop depth map</span>
+            </div>
+            <input type="file" id="depth-map-input" accept="image/*" hidden>
+          </div>
+        </section>
+
+        <!-- Light Settings Section -->
+        <section class="panel-section">
+          <h2>Light Settings</h2>
+
+          <div class="slider-group">
+            <div class="slider-header">
+              <label>Light Angle</label>
+              <span id="angle-value">135</span>
+            </div>
+            <input type="range" id="angle-slider" min="0" max="360" value="135">
+            <div class="slider-labels">
+              <span>0</span>
+              <span>360</span>
+            </div>
+          </div>
+
+          <div class="slider-group">
+            <div class="slider-header">
+              <label>Light Elevation</label>
+              <span id="elevation-value">45</span>
+            </div>
+            <input type="range" id="elevation-slider" min="0" max="90" value="45">
+            <div class="slider-labels">
+              <span>0 (horizon)</span>
+              <span>90 (overhead)</span>
+            </div>
+          </div>
+
+          <div class="slider-group">
+            <div class="slider-header">
+              <label>Shadow Intensity</label>
+              <span id="intensity-value">0.70</span>
+            </div>
+            <input type="range" id="intensity-slider" min="0" max="100" value="70">
+            <div class="slider-labels">
+              <span>Light</span>
+              <span>Dark</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Position & Scale Section -->
+        <section class="panel-section">
+          <h2>Position & Scale</h2>
+
+          <div class="slider-group">
+            <div class="slider-header">
+              <label>Foreground Scale</label>
+              <span id="scale-value">50%</span>
+            </div>
+            <input type="range" id="scale-slider" min="10" max="100" value="50">
+            <div class="slider-labels">
+              <span>10% (tiny)</span>
+              <span>100% (full)</span>
+            </div>
+          </div>
+
+          <div class="checkbox-group">
+            <input type="checkbox" id="auto-position" checked>
+            <label for="auto-position">Auto-position (center bottom)</label>
+          </div>
+
+          <div class="position-inputs">
+            <div class="input-row">
+              <label>X:</label>
+              <input type="number" id="pos-x" value="0" disabled>
+            </div>
+            <div class="input-row">
+              <label>Y:</label>
+              <input type="number" id="pos-y" value="0" disabled>
+            </div>
+          </div>
+        </section>
+
+        <!-- Action Buttons -->
+        <section class="panel-section actions">
+          <button id="generate-btn" class="btn btn-primary">Generate Shadow</button>
+          <button id="download-btn" class="btn btn-secondary" disabled>Download All</button>
+        </section>
+
+        <!-- Status -->
+        <div id="status-text" class="status">Ready</div>
+      </aside>
+
+      <!-- Right Panel - Preview -->
+      <section class="preview-panel">
+        <div class="preview-main">
+          <h2>Composite Preview</h2>
+          <div class="canvas-container">
+            <canvas id="composite-canvas"></canvas>
+            <div class="placeholder-text">Generate to see preview</div>
+          </div>
+        </div>
+
+        <div class="preview-debug">
+          <div class="debug-item">
+            <h3>Shadow Only</h3>
+            <div class="canvas-container small">
+              <canvas id="shadow-canvas"></canvas>
+            </div>
+          </div>
+          <div class="debug-item">
+            <h3>Mask Debug</h3>
+            <div class="canvas-container small">
+              <canvas id="mask-canvas"></canvas>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="app-footer">
+      <p>Shadow Generator - Realistic compositing with directional lighting</p>
+    </footer>
+  </div>
+
+  <script type="module" src="dist/bundle.js"></script>
+</body>
+</html>

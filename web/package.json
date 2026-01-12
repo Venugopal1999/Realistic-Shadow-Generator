@@ -1,0 +1,25 @@
+{
+  "name": "shadow-generator-web",
+  "version": "1.0.0",
+  "description": "Realistic Shadow Generator - Web Application",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --outfile=dist/bundle.js --format=esm",
+    "watch": "esbuild src/index.ts --bundle --outfile=dist/bundle.js --format=esm --watch",
+    "serve": "npx serve .",
+    "dev": "npm run build && npx serve ."
+  },
+  "keywords": [
+    "shadow",
+    "compositing",
+    "image-processing",
+    "canvas"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.27.2",
+    "serve": "^14.2.0",
+    "typescript": "^5.3.0"
+  }
+}
