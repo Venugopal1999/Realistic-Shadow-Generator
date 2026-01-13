@@ -45,20 +45,38 @@ class ShadowGenerator:
         """
         Compute shadow offset based on light angle and elevation.
         Returns (dx, dy) offset in pixels.
-        """
-        # Convert angles to radians
-        angle_rad = math.radians(self.light_angle)
-        elevation_rad = math.radians(self.light_elevation)
 
+        The shadow extends along the ground plane in the direction opposite to the light.
+        In image coordinates: +x = right, +y = down.
+
+        Light angle convention:
+        - 0° = light from right
+        - 90° = light from top
+        - 180° = light from left
+        - 270° = light from bottom
+        """
         # Shadow length inversely related to elevation (lower sun = longer shadow)
         # At 90° elevation (directly overhead), shadow length approaches 0
         # At 0° elevation (horizon), shadow is very long
-        shadow_length = height * self.shadow_length_factor * math.tan(math.radians(90 - self.light_elevation))
-        shadow_length = min(shadow_length, height * 3)  # Cap at 3x height
+        if self.light_elevation >= 89:
+            shadow_length = height * 0.1  # Minimal shadow when light is overhead
+        else:
+            shadow_length = height * self.shadow_length_factor * math.tan(math.radians(90 - self.light_elevation))
+        shadow_length = min(shadow_length, height * 2)  # Cap at 2x height for reasonable shadow
 
         # Shadow direction is opposite to light direction
-        dx = shadow_length * math.cos(angle_rad + math.pi)
-        dy = shadow_length * math.sin(angle_rad + math.pi)
+        # The shadow falls on the ground (horizontal plane), so we compute
+        # the horizontal component of the shadow direction
+        shadow_angle = self.light_angle + 180  # Opposite direction
+        angle_rad = math.radians(shadow_angle)
+
+        # dx: horizontal offset (positive = right, negative = left)
+        dx = shadow_length * math.cos(angle_rad)
+
+        # dy: In image coords, positive y is DOWN. For a shadow on the ground,
+        # dy should be small and positive (shadow appears below/in front of object)
+        # We use a small vertical spread based on viewing angle (assume ~30° from horizontal)
+        dy = shadow_length * 0.2  # Small downward component to place shadow on ground
 
         return dx, dy
 
@@ -104,20 +122,16 @@ class ShadowGenerator:
         canvas_size: Tuple[int, int]
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Create the main cast shadow with perspective projection.
+        Create a clearly visible cast shadow using PIL transform.
         Returns (shadow_mask, blur_map) for variable blur application.
         """
-        h, w = mask.shape
         canvas_h, canvas_w = canvas_size
-
-        # Get shadow offset
-        dx, dy = self.compute_shadow_offset(h)
 
         # Create output arrays
         shadow = np.zeros((canvas_h, canvas_w), dtype=np.float32)
         blur_map = np.zeros((canvas_h, canvas_w), dtype=np.float32)
 
-        # Find object bounds for processing
+        # Find object bounds
         rows = np.any(mask > 0.1, axis=1)
         cols = np.any(mask > 0.1, axis=0)
 
@@ -128,35 +142,108 @@ class ShadowGenerator:
         col_min, col_max = np.where(cols)[0][[0, -1]]
 
         object_height = row_max - row_min
-        object_base = row_max  # Bottom of object
+        object_base = row_max
+        object_center_x = (col_min + col_max) // 2
 
-        # Project shadow with perspective (shadow stretches from base)
-        for y in range(row_min, row_max + 1):
-            # Distance from base (contact point)
-            dist_from_base = object_base - y
+        # Shadow parameters
+        shadow_angle = self.light_angle + 180
+        angle_rad = math.radians(shadow_angle)
 
-            # Shadow offset increases with height (perspective)
-            # Points higher up cast shadows further away
-            progress = dist_from_base / max(object_height, 1)
+        if self.light_elevation >= 89:
+            shadow_length = object_height * 0.1
+        else:
+            shadow_length = object_height * math.tan(math.radians(90 - self.light_elevation)) * self.shadow_length_factor
+        shadow_length = min(shadow_length, object_height * 2.5)
 
-            # Current row's shadow offset
-            row_dx = dx * progress
-            row_dy = dy * progress
+        # Extract object mask as image for transformation
+        obj_mask = mask[row_min:row_max+1, col_min:col_max+1]
+        obj_h, obj_w = obj_mask.shape
 
-            for x in range(col_min, col_max + 1):
-                if mask[y, x] > 0.1:
-                    # Project this pixel to shadow position
-                    shadow_x = int(x + row_dx)
-                    shadow_y = int(y + row_dy + dist_from_base * 0.3)  # Shadow falls down
+        # FLIP the mask vertically so head projects to far end of shadow
+        # (top of person = head should be at far end, bottom = feet at near end)
+        obj_mask_flipped = np.flipud(obj_mask)
 
-                    # Bounds check
-                    if 0 <= shadow_x < canvas_w and 0 <= shadow_y < canvas_h:
-                        # Shadow intensity decreases with distance from base
-                        intensity = mask[y, x] * (1 - 0.5 * progress)
-                        shadow[shadow_y, shadow_x] = max(shadow[shadow_y, shadow_x], intensity)
+        # Convert to PIL for transform
+        mask_img = Image.fromarray((obj_mask_flipped * 255).astype(np.uint8), mode='L')
 
-                        # Blur increases with distance from contact
-                        blur_map[shadow_y, shadow_x] = progress
+        # Calculate shear transform coefficients
+        # PIL transform uses: x' = ax + by + c, y' = dx + ey + f
+        # For shadow: we want to shear horizontally and compress vertically
+
+        shear_amount = math.cos(angle_rad) * shadow_length / obj_h
+        vertical_scale = 0.35  # Compress to 35% height for ground projection
+
+        # New dimensions
+        new_h = int(obj_h * vertical_scale) + 20
+        new_w = obj_w + int(abs(shear_amount) * obj_h) + 20
+
+        # Create transform using AFFINE
+        # The coefficients map output to input: input = a*x + b*y + c, etc.
+        # We want: src_x = dst_x - shear * dst_y, src_y = dst_y / vertical_scale
+
+        if shear_amount >= 0:
+            x_shift = 0
+        else:
+            x_shift = int(abs(shear_amount) * obj_h)
+
+        # Affine coefficients (a, b, c, d, e, f) where:
+        # src_x = a*dst_x + b*dst_y + c
+        # src_y = d*dst_x + e*dst_y + f
+        a = 1
+        b = -shear_amount * (1 / vertical_scale)
+        c = -x_shift
+        d = 0
+        e = 1 / vertical_scale
+        f = 0
+
+        try:
+            shadow_transformed = mask_img.transform(
+                (new_w, new_h),
+                Image.AFFINE,
+                (a, b, c, d, e, f),
+                resample=Image.BILINEAR
+            )
+        except Exception:
+            # Fallback: just use original mask
+            shadow_transformed = mask_img.resize((new_w, new_h), Image.BILINEAR)
+
+        # Convert back to numpy
+        shadow_arr = np.array(shadow_transformed, dtype=np.float32) / 255.0
+
+        # Create intensity gradient (stronger at base)
+        gradient = np.linspace(1.0, 0.6, new_h).reshape(-1, 1)
+        shadow_arr = shadow_arr * gradient
+
+        # Fill holes and clean up
+        if np.any(shadow_arr > 0.05):
+            shadow_binary = shadow_arr > 0.05
+            shadow_binary = ndimage.binary_fill_holes(shadow_binary)
+            shadow_binary = ndimage.binary_closing(shadow_binary, iterations=8)
+            shadow_binary = ndimage.binary_dilation(shadow_binary, iterations=3)
+
+            # Re-apply gradient to filled shadow - use high intensity for clear edges
+            shadow_arr = np.where(shadow_binary, 1.0, 0) * gradient
+
+            # Very light smoothing for clean but sharp edges
+            shadow_arr = ndimage.gaussian_filter(shadow_arr, sigma=1)
+
+        # Create blur map
+        blur_arr = np.linspace(0, 1, new_h).reshape(-1, 1) * np.ones((1, new_w))
+        blur_arr = blur_arr * (shadow_arr > 0.1).astype(np.float32)
+
+        # Place on canvas
+        place_y = object_base
+        place_x = col_min - x_shift
+
+        # Copy to canvas
+        for sy in range(new_h):
+            cy = place_y + sy
+            if 0 <= cy < canvas_h:
+                for sx in range(new_w):
+                    cx = place_x + sx
+                    if 0 <= cx < canvas_w:
+                        shadow[cy, cx] = max(shadow[cy, cx], shadow_arr[sy, sx])
+                        blur_map[cy, cx] = max(blur_map[cy, cx], blur_arr[sy, sx])
 
         return shadow, blur_map
 
@@ -330,11 +417,14 @@ class ShadowGenerator:
         # Create composite
         bg_array = np.array(background, dtype=np.float32)
 
-        # Apply shadow to background (darken)
-        shadow_3ch = np.stack([combined_shadow] * 3, axis=-1)
-        shadowed_bg = bg_array * (1 - shadow_3ch * 0.8)  # Darken by shadow
+        # Apply shadow to background (darken) - VERY dark shadow for clear visibility
+        # combined_shadow is 0-1, we want to make shadow areas very dark
+        shadow_factor = (1 - combined_shadow * 1.5).astype(np.float32)  # Boost shadow effect
+        shadow_factor = np.clip(shadow_factor, 0.0, 1.0)  # Allow completely black
+        for c in range(3):
+            bg_array[:, :, c] *= shadow_factor
 
-        composite = Image.fromarray(shadowed_bg.astype(np.uint8), mode='RGB')
+        composite = Image.fromarray(bg_array.astype(np.uint8), mode='RGB')
 
         # Paste foreground
         composite.paste(foreground, foreground_position, foreground)
@@ -344,37 +434,65 @@ class ShadowGenerator:
 
 def auto_cutout_subject(image: Image.Image) -> Image.Image:
     """
-    Simple background removal using edge detection and flood fill.
+    Background removal using color-based segmentation.
     For production, use rembg or similar ML-based solution.
     """
     try:
         from rembg import remove
         return remove(image)
     except ImportError:
-        # Fallback: simple threshold-based removal (assumes light background)
+        # Fallback: improved color-based background removal
         if image.mode != 'RGBA':
             image = image.convert('RGBA')
 
         arr = np.array(image)
-        rgb = arr[:, :, :3]
+        rgb = arr[:, :, :3].astype(np.float32)
+        h, w = rgb.shape[:2]
 
-        # Simple: assume corners are background color
-        corners = [rgb[0, 0], rgb[0, -1], rgb[-1, 0], rgb[-1, -1]]
-        bg_color = np.mean(corners, axis=0)
+        # Sample background color from edges (more robust than just corners)
+        edge_samples = []
+        sample_size = 20  # pixels from edge
+        # Top edge
+        edge_samples.extend(rgb[:sample_size, :].reshape(-1, 3).tolist())
+        # Bottom edge
+        edge_samples.extend(rgb[-sample_size:, :].reshape(-1, 3).tolist())
+        # Left edge
+        edge_samples.extend(rgb[:, :sample_size].reshape(-1, 3).tolist())
+        # Right edge
+        edge_samples.extend(rgb[:, -sample_size:].reshape(-1, 3).tolist())
 
-        # Distance from background color
-        diff = np.sqrt(np.sum((rgb.astype(float) - bg_color) ** 2, axis=-1))
+        # Use median for robustness against outliers
+        bg_color = np.median(edge_samples, axis=0)
 
-        # Create alpha based on difference
-        alpha = np.clip(diff / 100, 0, 1) * 255
+        # Color distance from background (Euclidean in RGB space)
+        diff = np.sqrt(np.sum((rgb - bg_color) ** 2, axis=-1))
 
-        # Apply some morphological operations
+        # Adaptive threshold based on image statistics
+        threshold = max(30, np.percentile(diff, 30))
+
+        # Create binary mask
+        foreground_mask = diff > threshold
+
+        # Morphological operations to clean up mask
         from scipy import ndimage
-        alpha = ndimage.binary_erosion(alpha > 128, iterations=2)
-        alpha = ndimage.binary_dilation(alpha, iterations=3)
-        alpha = ndimage.gaussian_filter(alpha.astype(float), sigma=1) * 255
 
-        arr[:, :, 3] = alpha.astype(np.uint8)
+        # Fill holes in the foreground
+        foreground_mask = ndimage.binary_fill_holes(foreground_mask)
+
+        # Remove small noise
+        foreground_mask = ndimage.binary_opening(foreground_mask, iterations=2)
+
+        # Close small gaps
+        foreground_mask = ndimage.binary_closing(foreground_mask, iterations=5)
+
+        # Dilate slightly to include edges
+        foreground_mask = ndimage.binary_dilation(foreground_mask, iterations=2)
+
+        # Smooth edges
+        alpha = ndimage.gaussian_filter(foreground_mask.astype(np.float32), sigma=2)
+        alpha = np.clip(alpha * 1.5, 0, 1)  # Boost and clip
+
+        arr[:, :, 3] = (alpha * 255).astype(np.uint8)
         return Image.fromarray(arr)
 
 
@@ -410,11 +528,13 @@ def generate_shadow_composite(
     if depth_map_path:
         depth_map = Image.open(depth_map_path)
 
-    # Auto-position: center horizontally, bottom vertically
+    # Auto-position: center horizontally, positioned to leave room for shadow
     if position is None:
         bg_w, bg_h = background.size
         fg_w, fg_h = foreground.size
-        position = ((bg_w - fg_w) // 2, bg_h - fg_h - 20)
+        # Leave more vertical space below for shadow (at least 25% of foreground height)
+        shadow_margin = max(int(fg_h * 0.25), 50)
+        position = ((bg_w - fg_w) // 2, bg_h - fg_h - shadow_margin)
 
     # Generate shadow
     generator = ShadowGenerator(
